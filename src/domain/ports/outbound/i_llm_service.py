@@ -4,33 +4,33 @@ from typing import AsyncGenerator
 class ILLMService(ABC):
 
     @abstractmethod
-    async def generar_explication(
-        self, 
+    async def generar_explicacion(          # ← explication → explicacion
+        self,
         contenido_pdf: str,
         progreso: float,
         nombre_alumno: str,
         nombre_profesor: str
     ) -> str:
-        """Genera el siguiente bloqueo de clase basado en el PDF"""
+        """Genera el siguiente bloque de clase basado en el PDF"""
         pass
 
     @abstractmethod
     async def responder_duda(
         self,
-        preguntar: str,
+        pregunta: str,                      # ← preguntar → pregunta
         contenido_pdf: str,
         historial: list[dict]
     ) -> str:
-        """Responde duda del alumno, estrictamente basado en el pdf"""
+        """Responde duda del alumno, estrictamente basado en el PDF"""
         pass
 
     @abstractmethod
     async def validar_tema(
         self,
-        preguntar: str,
+        pregunta: str,                      # ← preguntar → pregunta
         contenido_pdf: str
     ) -> bool:
-        """True si la pregunta esta dentro del tema del PDF"""
+        """True si la pregunta está dentro del tema del PDF"""
         pass
 
     @abstractmethod
@@ -39,7 +39,7 @@ class ILLMService(ABC):
         contenido_pdf: str,
         progreso: float,
         nombre_alumno: str,
-        nombre_profesor: str,
+        nombre_profesor: str
     ) -> AsyncGenerator[str, None]:
         """Stream para respuestas en tiempo real"""
         pass

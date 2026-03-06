@@ -1,8 +1,8 @@
 class IAException(Exception):
-    """Base de la excepciones de la IA"""
+    """Base de excepciones de la IA"""
     pass
 
-class LLMNoDisponibleExepction(IAException):
+class LLMNoDisponibleException(IAException):
     pass
 
 class TTSNoDisponibleException(IAException):

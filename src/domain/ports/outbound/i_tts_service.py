@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-class ITTService(ABC):
+class ITTSService(ABC):
     @abstractmethod
     async def sintetizar(self, text: str) -> bytes:
         """Convierte el texto a audio(bytes MP3/WAV)"""

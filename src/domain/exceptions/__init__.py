@@ -6,10 +6,9 @@ from .clase_exception import (
     FueraDeTemaException,
     SalaNoDisponibleException
 )
-
 from .ia_exception import (
     IAException,
-    LLMNoDisponibleExepction,
+    LLMNoDisponibleException,
     TTSNoDisponibleException,
     STTNoDisponibleException,
     ContextoExcedidoException
