@@ -2,6 +2,12 @@
 from flask_restx import Api
 from dotenv import load_dotenv
 import os
+import logging
+
+logging.basicConfig(
+    level   = logging.INFO,
+    format  = "%(asctime)s [%(threadName)s] %(levelname)s — %(message)s"
+)
 
 load_dotenv()
 
@@ -11,7 +17,6 @@ from src.infrastructure.inbound.http.middlewares.error_handler import registrar_
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret')
 
-# Swagger
 api = Api(
     app,
     version     = '1.0',
@@ -30,4 +35,7 @@ def health():
 
 
 if __name__ == '__main__':
-    app.run(debug=os.getenv('FLASK_DEBUG', True))
+    app.run(
+        debug        = os.getenv('FLASK_DEBUG', True),
+        use_reloader = False
+    )

@@ -54,12 +54,14 @@ def get_stt_service() -> WhisperAdapter:
 @lru_cache()
 def get_sala_service() -> JitsiAdapter:
     s = get_settings()
+    
+    # Opción 1: Sin API base URL (usará la URL por defecto)
     return JitsiAdapter(
         app_id           = s.JITSI_APP_ID,
         api_key_id       = s.JITSI_API_KEY_ID,
         private_key_path = s.JITSI_PRIVATE_KEY_PATH
     )
-
+    
 @lru_cache()
 def get_pdf_service() -> S3PDFAdapter:
     s = get_settings()
@@ -86,7 +88,8 @@ def get_crear_clase_use_case() -> CrearClaseUseCase:
         tts_service   = get_tts_service(),
         sala_service  = get_sala_service(),
         pdf_service   = get_pdf_service(),
-        cache_service = get_cache_service()
+        cache_service = get_cache_service(),
+        stt_service   = get_stt_service(),
     )
 
 def get_gestionar_duda_use_case() -> GestionarDudaUseCase:

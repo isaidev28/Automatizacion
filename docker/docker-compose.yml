@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   redis:
     image: redis:7-alpine
@@ -19,5 +17,131 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  prosody:
+    image: jitsi/prosody:stable-9753
+    container_name: jitsi_prosody
+    expose:
+      - '5222'
+      - '5347'
+      - '5280'
+    ports:
+      - '5280:5280' # exponer BOSH directamente al host
+    environment:
+      - AUTH_TYPE=internal
+      - ENABLE_AUTH=0
+      - ENABLE_GUESTS=1
+      - ENABLE_LOBBY=0
+      - GLOBAL_MODULES=statistics,conversationmeter
+      - GLOBAL_CONFIG=statistics_interval=30;
+      - JICOFO_COMPONENT_SECRET=${JICOFO_COMPONENT_SECRET:-s3cr3t}
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD:-jicofo_pass}
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD:-jvb_pass}
+      - JIGASI_XMPP_PASSWORD=${JIGASI_XMPP_PASSWORD:-jigasi_pass}
+      - JIBRI_RECORDER_PASSWORD=${JIBRI_RECORDER_PASSWORD:-jibri_pass}
+      - JIBRI_XMPP_PASSWORD=${JIBRI_XMPP_PASSWORD:-jibri_pass}
+      - TZ=America/Mexico_City
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_GUEST_DOMAIN=guest.meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_MODULES=
+      - XMPP_MUC_MODULES=
+      - XMPP_INTERNAL_MUC_MODULES=
+    volumes:
+      - prosody_config:/config
+      - prosody_plugins:/prosody-plugins-custom
+    networks:
+      jitsi_net:
+        aliases:
+          - xmpp.meet.jitsi
+
+  jicofo:
+    image: jitsi/jicofo:stable-9753
+    container_name: jitsi_jicofo
+    environment:
+      - AUTH_TYPE=internal
+      - ENABLE_AUTH=0
+      - ENABLE_LOBBY=0
+      - BRIDGE_AVG_PARTICIPANT_STRESS=0.005
+      - BRIDGE_STRESS_THRESHOLD=0.8
+      - JICOFO_COMPONENT_SECRET=${JICOFO_COMPONENT_SECRET:-s3cr3t}
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD:-jicofo_pass}
+      - TZ=America/Mexico_City
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_SERVER=xmpp.meet.jitsi
+    depends_on:
+      - prosody
+    networks:
+      - jitsi_net
+
+  jvb:
+    image: jitsi/jvb:stable-9753
+    container_name: jitsi_jvb
+    ports:
+      - '10000:10000/udp'
+      - '4443:4443'
+    environment:
+      - ENABLE_COLIBRI_WEBSOCKET=1
+      - JVB_AUTH_PASSWORD=${JVB_AUTH_PASSWORD:-jvb_pass}
+      - JVB_BREWERY_MUC=jvbbrewery
+      - JVB_PORT=10000
+      - JVB_TCP_HARVESTER_DISABLED=true
+      - JVB_ADVERTISE_IPS=127.0.0.1
+      - DOCKER_HOST_ADDRESS=127.0.0.1
+      - JVB_STUN_SERVERS=meet-jit-si-turnrelay.jitsi.net:443
+      - PUBLIC_URL=http://localhost:8443
+      - TZ=America/Mexico_City
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi
+      - XMPP_SERVER=xmpp.meet.jitsi
+    depends_on:
+      - prosody
+    networks:
+      - jitsi_net
+
+  web:
+    image: jitsi/web:stable-9753
+    container_name: jitsi_web
+    ports:
+      - '8443:80'
+    environment:
+      - ENABLE_AUTH=0
+      - ENABLE_GUESTS=1
+      - ENABLE_LOBBY=0
+      - ENABLE_PREJOIN_PAGE=0
+      - DISABLE_DEEP_LINKING=1
+      - TZ=America/Mexico_City
+      # FIX: URL absoluta sin esquema para que nginx la construya correctamente
+      - PUBLIC_URL=http://localhost:8443
+      - XMPP_DOMAIN=meet.jitsi
+      - XMPP_AUTH_DOMAIN=auth.meet.jitsi
+      - XMPP_MUC_DOMAIN=muc.meet.jitsi
+      - XMPP_GUEST_DOMAIN=guest.meet.jitsi
+      # FIX CLAVE: apuntar BOSH directamente al host, no al alias interno
+      - XMPP_BOSH_URL_BASE=http://localhost:5280
+      - ENABLE_XMPP_WEBSOCKET=0
+      - JICOFO_AUTH_PASSWORD=${JICOFO_AUTH_PASSWORD:-jicofo_pass}
+    volumes:
+      - web_config:/config
+      - web_transcripts:/usr/share/jitsi-meet/transcripts
+    depends_on:
+      - prosody
+    networks:
+      jitsi_net:
+        aliases:
+          - meet.jitsi
+
 volumes:
   redis_data:
+  prosody_config:
+  prosody_plugins:
+  web_config:
+  web_transcripts:
+
+networks:
+  jitsi_net:
+    driver: bridge

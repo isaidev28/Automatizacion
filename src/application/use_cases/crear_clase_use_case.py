@@ -1,4 +1,7 @@
 import uuid
+import asyncio
+import threading
+import logging
 from src.domain.entities.clase import Clase, EstadoClase
 from src.domain.value_objects.email import Email
 from src.domain.value_objects.sala_id import SalaId
@@ -8,8 +11,12 @@ from src.domain.ports.outbound.i_tts_service import ITTSService
 from src.domain.ports.outbound.i_sala_service import ISalaService
 from src.domain.ports.outbound.i_pdf_service import IPDFService
 from src.domain.ports.outbound.i_cache_service import ICacheService
+from src.domain.ports.outbound.i_stt_service import ISTTService
 from src.domain.ports.inbound.i_crear_clase import ICrearClase
 from src.application.dtos.crear_clase_dto import CrearClaseDTO, RespuestaClaseDTO
+from src.infrastructure.outbound.sala.bot_sala import BotSala
+
+logger = logging.getLogger(__name__)
 
 
 class CrearClaseUseCase(ICrearClase):
@@ -21,12 +28,19 @@ class CrearClaseUseCase(ICrearClase):
         sala_service:  ISalaService,
         pdf_service:   IPDFService,
         cache_service: ICacheService,
+        stt_service:   ISTTService,
     ):
         self._llm   = llm_service
         self._tts   = tts_service
         self._sala  = sala_service
         self._pdf   = pdf_service
         self._cache = cache_service
+        self._bot   = BotSala(
+            stt_service   = stt_service,
+            tts_service   = tts_service,
+            llm_service   = llm_service,
+            cache_service = cache_service,
+        )
 
     async def ejecutar(self, dto: CrearClaseDTO) -> RespuestaClaseDTO:
 
@@ -44,12 +58,12 @@ class CrearClaseUseCase(ICrearClase):
         # 2. Extraer contenido del PDF desde S3
         clase.pdf_contenido = await self._pdf.extraer_contenido(str(clase.url_pdf))
 
-        # 3. Crear sala Jitsi — alumno sin control de sala
+        # 3. Crear sala Jitsi
         links = await self._sala.crear_sala(
-            sala_id          = str(clase.sala_id),
-            nombre_profesor  = clase.nombre_profesor,
-            nombre_alumno    = clase.nombre_alumno,
-            correo_alumno    = str(clase.correo_alumno),
+            sala_id         = str(clase.sala_id),
+            nombre_profesor = clase.nombre_profesor,
+            nombre_alumno   = clase.nombre_alumno,
+            correo_alumno   = str(clase.correo_alumno),
         )
         clase.link_alumno     = links.alumno
         clase.link_supervisor = links.supervisor
@@ -67,7 +81,11 @@ class CrearClaseUseCase(ICrearClase):
         clase.sesion_ia.agregar_mensaje("assistant", introduccion)
 
         # 6. Convertir introducción a voz
-        await self._tts.sintetizar(introduccion)
+        audio_introduccion = None
+        try:
+            audio_introduccion = await self._tts.sintetizar(introduccion[:400])
+        except Exception as e:
+            logger.warning(f"TTS omitido: {e}")
 
         # 7. Persistir sesión completa en Redis
         await self._cache.guardar_sesion(clase.id, {
@@ -87,6 +105,35 @@ class CrearClaseUseCase(ICrearClase):
         })
 
         await self._cache.actualizar_estado(clase.id, EstadoClase.EN_CURSO.value)
+
+        # 8. Lanzar bot en hilo separado con su propio event loop
+        link_supervisor    = clase.link_supervisor
+        clase_id           = clase.id
+        bot                = self._bot
+
+        def _lanzar_bot():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(
+                    bot.entrar_sala(
+                        link_supervisor    = link_supervisor,
+                        clase_id           = clase_id,
+                        audio_introduccion = audio_introduccion,
+                    )
+                )
+            except Exception as e:
+                logger.exception(f"Error en hilo del bot: {e}")
+            finally:
+                loop.close()
+
+        hilo = threading.Thread(
+            target = _lanzar_bot,
+            daemon = True,
+            name   = f"bot-{clase_id}"
+        )
+        hilo.start()
+        logger.info(f"Bot lanzado en hilo: bot-{clase_id}")
 
         return RespuestaClaseDTO(
             clase_id        = clase.id,

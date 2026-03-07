@@ -43,3 +43,13 @@ class ILLMService(ABC):
     ) -> AsyncGenerator[str, None]:
         """Stream para respuestas en tiempo real"""
         pass
+
+    @abstractmethod 
+    async def generar_saludo(
+        self,
+        nombre_alumno: str,
+        nombre_profesor: str,
+        tema_pdf:str
+    ) -> str: 
+        """Generar saludo al inicio de la plataforma """
+        pass
