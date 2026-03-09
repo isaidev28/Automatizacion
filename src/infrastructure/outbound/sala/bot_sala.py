@@ -13,22 +13,22 @@ logger = logging.getLogger(__name__)
 _INIT_SCRIPT = """
 (function() {
     const FAKE_DEVICE_ID = 'bot-synthetic-audio-stream';
-
     let _ctx  = null;
     let _dest = null;
 
-    window._audioQueue = [];
-    window._isPlaying  = false;
+    window._audioQueue   = [];
+    window._isPlaying    = false;
+    window._remoteChunks = [];
+    window._remoteRecorder = null;
 
     function _getOrCreateContext() {
         if (_ctx) return { ctx: _ctx, dest: _dest };
-
         _ctx  = new AudioContext({ sampleRate: 16000 });
         _dest = _ctx.createMediaStreamDestination();
         window._audioContext = _ctx;
         window._audioDest    = _dest;
 
-        // Nodo de silencio permanente — mantiene el MediaStream vivo en Jitsi
+        // Silencio permanente para mantener stream vivo
         const silBuf  = _ctx.createBuffer(1, _ctx.sampleRate, _ctx.sampleRate);
         const silNode = _ctx.createBufferSource();
         silNode.buffer = silBuf;
@@ -36,85 +36,86 @@ _INIT_SCRIPT = """
         silNode.connect(_dest);
         silNode.start();
 
+        // Destino para capturar audio REMOTO (del alumno)
+        window._remoteDest = _ctx.createMediaStreamDestination();
+
         window._playNext = async function() {
             if (window._isPlaying || window._audioQueue.length === 0) return;
             window._isPlaying = true;
-
             if (_ctx.state === 'suspended') await _ctx.resume();
-
             const b64    = window._audioQueue.shift();
             const binary = atob(b64);
             const bytes  = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
             try {
                 const buf    = await _ctx.decodeAudioData(bytes.buffer);
                 const source = _ctx.createBufferSource();
                 source.buffer = buf;
                 source.connect(_dest);
                 source.start();
-                console.log('[BotSala] Reproduciendo audio, duracion:', buf.duration.toFixed(2), 's');
                 source.onended = function() {
                     window._isPlaying = false;
                     window._playNext();
                 };
             } catch(e) {
-                console.error('[BotSala] Error decodificando audio:', e);
                 window._isPlaying = false;
                 window._playNext();
             }
         };
 
-        console.log('[BotSala] AudioContext creado (sampleRate=16000)');
+        console.log('[BotSala] AudioContext creado');
         return { ctx: _ctx, dest: _dest };
     }
 
-    // ── Inyectar nuestro dispositivo en la lista de Jitsi ────────────────────
-    // Sin esto Jitsi elige "Mezcla estéreo" y nunca usa el stream del bot.
+    // Interceptar enumerateDevices
     const origEnumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
     navigator.mediaDevices.enumerateDevices = async function() {
         const devices = await origEnumerate();
         const fakeDevice = {
-            deviceId : FAKE_DEVICE_ID,
-            groupId  : 'bot-group',
-            kind     : 'audioinput',
-            label    : 'Bot Synthetic Microphone',
-            toJSON   : () => ({
-                deviceId : FAKE_DEVICE_ID,
-                groupId  : 'bot-group',
-                kind     : 'audioinput',
-                label    : 'Bot Synthetic Microphone',
-            }),
+            deviceId: FAKE_DEVICE_ID, groupId: 'bot-group',
+            kind: 'audioinput', label: 'Bot Synthetic Microphone',
+            toJSON: () => ({ deviceId: FAKE_DEVICE_ID, groupId: 'bot-group', kind: 'audioinput', label: 'Bot Synthetic Microphone' }),
         };
-        console.log('[BotSala] enumerateDevices — inyectando Bot Synthetic Microphone');
-        // Poner el dispositivo falso primero para que Jitsi lo elija por defecto
         return [fakeDevice, ...devices.filter(d => d.kind !== 'audioinput')];
     };
 
-    // ── Interceptar getUserMedia — siempre devolver stream sintético ─────────
+    // Interceptar getUserMedia — devolver stream sintético
     const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async function(constraints) {
-        if (!constraints || !constraints.audio) {
-            return origGetUserMedia(constraints);
-        }
+        if (!constraints || !constraints.audio) return origGetUserMedia(constraints);
         const { dest } = _getOrCreateContext();
-        console.log('[BotSala] getUserMedia interceptado -> stream sintetico');
+        console.log('[BotSala] getUserMedia -> stream sintetico');
         return dest.stream;
     };
 
-    // ── Forzar deviceId en localStorage antes de que Jitsi lo lea ───────────
+    // ── CLAVE: Interceptar RTCPeerConnection para capturar audio remoto ──────
+    const OrigRTC = window.RTCPeerConnection;
+    window.RTCPeerConnection = function(...args) {
+        const pc = new OrigRTC(...args);
+        pc.addEventListener('track', (event) => {
+            if (event.track.kind !== 'audio') return;
+            const { ctx } = _getOrCreateContext();
+            const stream = event.streams[0] || new MediaStream([event.track]);
+            try {
+                const src = ctx.createMediaStreamSource(stream);
+                src.connect(window._remoteDest);
+                console.log('[BotSala] Track remoto conectado a remoteDest');
+            } catch(e) {
+                console.error('[BotSala] Error conectando track remoto:', e);
+            }
+        });
+        return pc;
+    };
+    Object.assign(window.RTCPeerConnection, OrigRTC);
+    window.RTCPeerConnection.prototype = OrigRTC.prototype;
+
     try {
         localStorage.setItem('audioDeviceId', FAKE_DEVICE_ID);
-        localStorage.setItem('userSelectedAudioInput', JSON.stringify({
-            deviceId : FAKE_DEVICE_ID,
-            label    : 'Bot Synthetic Microphone',
-        }));
     } catch(e) {}
 
-    console.log('[BotSala] Interceptor instalado — FAKE_DEVICE_ID:', FAKE_DEVICE_ID);
+    console.log('[BotSala] Interceptor RTCPeerConnection instalado');
 })();
 """
-
 
 class BotSala:
 
@@ -176,35 +177,57 @@ class BotSala:
         except Exception as e:
             logger.exception(f"Error reproduciendo audio: {e}")
 
-    def _capturar_audio(self) -> bytes:
+    async def _capturar_audio_jitsi(self, page, segundos: float = 5.0) -> bytes:
         try:
-            # CAMBIA ESTO: Usa CABLE Output, NO Mezcla estéreo
-            _, cable_output = self._obtener_dispositivos_cable()
-            
-            if cable_output is None:
-                logger.error("CABLE Output no encontrado")
+            # Iniciar grabación desde remoteDest
+            await page.evaluate(f"""
+                async () => {{
+                    if (!window._remoteDest) {{
+                        console.warn('[BotSala] remoteDest no disponible');
+                        return;
+                    }}
+                    window._remoteChunks = [];
+                    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                        ? 'audio/webm;codecs=opus' : 'audio/webm';
+                    const recorder = new MediaRecorder(window._remoteDest.stream, {{mimeType}});
+                    window._remoteRecorder = recorder;
+                    recorder.ondataavailable = e => {{
+                        if (e.data.size > 0) window._remoteChunks.push(e.data);
+                    }};
+                    recorder.start(100);
+                    setTimeout(() => recorder.stop(), {int(segundos * 1000)});
+                    console.log('[BotSala] Grabando audio remoto...');
+                }}
+            """)
+
+            await asyncio.sleep(segundos + 0.8)
+
+            b64 = await page.evaluate("""
+                async () => {
+                    return new Promise(resolve => {
+                        if (!window._remoteChunks || window._remoteChunks.length === 0) {
+                            resolve(null); return;
+                        }
+                        const blob = new Blob(window._remoteChunks, {type: 'audio/webm'});
+                        console.log('[BotSala] Blob grabado:', blob.size, 'bytes');
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                        reader.readAsDataURL(blob);
+                    });
+                }
+            """)
+
+            if not b64:
+                logger.warning("Sin audio remoto capturado")
                 return b""
-            
-            logger.info(f"Capturando desde CABLE Output (índice {cable_output})...")
-            audio = sd.rec(
-                self._chunk_size,
-                samplerate=self._sample_rate,
-                channels=1,
-                dtype=np.int16,
-                device=cable_output,  # ← Cambiado de mezcla_index a cable_output
-            )
-            sd.wait()
-            
-            buffer = io.BytesIO()
-            with wave.open(buffer, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(self._sample_rate)
-                wf.writeframes(audio.tobytes())
-            return buffer.getvalue()
-            
+
+            import base64
+            audio = base64.b64decode(b64)
+            logger.info(f"Audio remoto capturado: {len(audio)} bytes")
+            return audio
+
         except Exception as e:
-            logger.exception(f"Error capturando audio: {e}")
+            logger.exception(f"Error capturando audio Jitsi: {e}")
             return b""
     # ──────────────────────────────────────────────────────────────────────────
     # Inyección de audio en página Jitsi
@@ -237,7 +260,7 @@ class BotSala:
                     audio_array = self._bytes_a_numpy(audio_bytes)
                     # Reproducir en paralelo sin esperar
                     sd.play(audio_array, samplerate=self._sample_rate, device=cable_input)
-                    logger.info(f"🔊 Audio local reproduciendo en CABLE Input ({len(audio_bytes)} bytes)")
+                    logger.info(f" Audio local reproduciendo en CABLE Input ({len(audio_bytes)} bytes)")
                 else:
                     logger.warning("CABLE Input no encontrado, no se reproduce localmente")
             except Exception as e:
@@ -259,7 +282,12 @@ class BotSala:
         while self._activo:
             try:
                 logger.info("Capturando audio del alumno...")
-                audio_bytes = await asyncio.to_thread(self._capturar_audio)
+                
+                # Usar captura desde Jitsi si hay página activa
+                if self._page:
+                    audio_bytes = await self._capturar_audio_jitsi(self._page, segundos=5.0)
+                else:
+                    audio_bytes = await asyncio.to_thread(self._capturar_audio)
 
                 if not audio_bytes:
                     logger.warning("Audio vacío, reintentando...")
@@ -293,6 +321,9 @@ class BotSala:
                     await self._inyectar_audio_en_pagina(self._page, audio_respuesta)
                 else:
                     await asyncio.to_thread(self._reproducir_audio, audio_respuesta)
+
+                # Pausa post-respuesta para no capturarse a sí mismo
+                await asyncio.sleep(1.0)
 
                 sesion["historial"].append({"role": "user",      "content": transcripcion})
                 sesion["historial"].append({"role": "assistant",  "content": respuesta})
