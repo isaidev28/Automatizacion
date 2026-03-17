@@ -1,8 +1,15 @@
+import asyncio
+import json
+import logging
+from typing import AsyncGenerator, Optional
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from google import genai
+from google.genai import types
 from src.domain.ports.outbound.i_llm_service import ILLMService
 from src.domain.exceptions.ia_exception import LLMNoDisponibleException
-from typing import AsyncGenerator
-import asyncio
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT_TEMPLATE = """
 Eres {nombre_profesor}, un profesor virtual experto dando clase a {nombre_alumno}.
@@ -145,3 +152,27 @@ class GeminiAdapter(ILLMService):
         except Exception as e:
             # Saludo por defecto si falla el LLM
             return f"¡Bienvenido {nombre_alumno}! Soy {nombre_profesor}, comenzamos la clase ahora."
+        
+    async def generar_secciones(self, contenido_pdf: str) -> list[dict]:
+        """Divide el PDF en secciones para explicar"""
+        prompt = f"""Analiza este contenido y divídelo en secciones lógicas para dar una clase.
+    Para cada sección genera:
+    - titulo: título corto de la sección
+    - explicacion: explicación didáctica de 3-4 oraciones máximo, como si hablaras con un estudiante
+
+    Responde SOLO con JSON válido, sin markdown, con este formato exacto:
+    [
+    {{"titulo": "...", "explicacion": "..."}},
+    ...
+    ]
+
+    Contenido:
+    {contenido_pdf[:8000]}"""
+
+        try:
+            texto = await asyncio.to_thread(self._generar_sincrono, prompt)
+            texto_limpio = texto.strip().replace("```json", "").replace("```", "").strip()
+            return json.loads(texto_limpio)
+        except Exception as e:
+            logger.warning(f"Error parseando secciones: {e}")
+            return [{"titulo": "Tema", "explicacion": contenido_pdf[:500]}]

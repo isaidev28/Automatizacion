@@ -14,7 +14,7 @@ from src.domain.ports.outbound.i_cache_service import ICacheService
 from src.domain.ports.outbound.i_stt_service import ISTTService
 from src.domain.ports.inbound.i_crear_clase import ICrearClase
 from src.application.dtos.crear_clase_dto import CrearClaseDTO, RespuestaClaseDTO
-from src.infrastructure.outbound.sala.bot_sala import BotSala
+from src.application.use_cases.ClaseOrquestador import ClaseOrquestador
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class CrearClaseUseCase(ICrearClase):
         self._sala  = sala_service
         self._pdf   = pdf_service
         self._cache = cache_service
-        self._bot   = BotSala(
+        self._bot   = ClaseOrquestador(
             stt_service   = stt_service,
             tts_service   = tts_service,
             llm_service   = llm_service,
@@ -71,23 +71,7 @@ class CrearClaseUseCase(ICrearClase):
         # 4. Iniciar entidad y crear sesión IA
         clase.iniciar()
 
-        # 5. Generar introducción con el LLM
-        introduccion = await self._llm.generar_explicacion(
-            contenido_pdf   = clase.pdf_contenido.texto_completo,
-            progreso        = 0.0,
-            nombre_alumno   = clase.nombre_alumno,
-            nombre_profesor = clase.nombre_profesor,
-        )
-        clase.sesion_ia.agregar_mensaje("assistant", introduccion)
-
-        # 6. Convertir introducción a voz
-        audio_introduccion = None
-        try:
-            audio_introduccion = await self._tts.sintetizar(introduccion[:400])
-        except Exception as e:
-            logger.warning(f"TTS omitido: {e}")
-
-        # 7. Persistir sesión completa en Redis
+        # 5. Persistir sesión completa en Redis
         await self._cache.guardar_sesion(clase.id, {
             "clase_id":        clase.id,
             "nombre_profesor": clase.nombre_profesor,
@@ -99,14 +83,14 @@ class CrearClaseUseCase(ICrearClase):
             "link_supervisor": clase.link_supervisor,
             "estado":          clase.estado.value,
             "progreso":        clase.sesion_ia.progreso,
-            "historial":       clase.sesion_ia.historial_chat,
+            "historial":       [],
             "pdf_texto":       clase.pdf_contenido.texto_completo,
             "pdf_temas":       clase.pdf_contenido.temas,
         })
 
         await self._cache.actualizar_estado(clase.id, EstadoClase.EN_CURSO.value)
 
-        # 8. Lanzar bot en hilo separado con su propio event loop
+        # 6. Lanzar bot en hilo separado con su propio event loop
         link_supervisor    = clase.link_supervisor
         clase_id           = clase.id
         bot                = self._bot
@@ -116,10 +100,9 @@ class CrearClaseUseCase(ICrearClase):
             asyncio.set_event_loop(loop)
             try:
                 loop.run_until_complete(
-                    bot.entrar_sala(
+                    bot.iniciar_clase(
                         link_supervisor    = link_supervisor,
                         clase_id           = clase_id,
-                        audio_introduccion = audio_introduccion,
                     )
                 )
             except Exception as e:

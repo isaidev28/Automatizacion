@@ -53,3 +53,8 @@ class ILLMService(ABC):
     ) -> str: 
         """Generar saludo al inicio de la plataforma """
         pass
+
+    @abstractmethod
+    async def generar_secciones(self, contenido_pdf: str) -> list[dict]:
+        """Divide el pdf en secciones para dar una clase"""
+        pass
